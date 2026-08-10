@@ -4,4 +4,5 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+  <ItemGroup><PackageReference Include="Npgsql" Version="8.0.6" /></ItemGroup>
 </Project>

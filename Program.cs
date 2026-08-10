@@ -9,9 +9,13 @@ var port = Environment.GetEnvironmentVariable("PORT") ?? "5050";
 builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 var app = builder.Build();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(20) });
-var hub = new ChatHub();
-app.MapGet("/", () => Results.Ok(new { name = "SigmaChat server", version = "5.5", status = "online", storage = "ephemeral" }));
+var accounts = new AccountStore(Environment.GetEnvironmentVariable("DATABASE_URL"));
+await accounts.Initialize();
+var hub = new ChatHub(accounts);
+app.MapGet("/", () => Results.Ok(new { name = "SigmaChat server", version = "6.0", status = "online", accountsConfigured = accounts.Configured }));
 app.MapGet("/health", () => Results.Ok("ok"));
+app.MapPost("/api/register", async (AccountRequest request) => await accounts.Register(request.Username, request.Password));
+app.MapPost("/api/login", async (AccountRequest request) => await accounts.Login(request.Username, request.Password));
 app.Map("/ws", async context =>
 {
     if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = 400; return; }
@@ -24,6 +28,8 @@ sealed class ChatHub
 {
     readonly ConcurrentDictionary<string, Room> rooms = new(StringComparer.OrdinalIgnoreCase);
     readonly JsonSerializerOptions json = new(JsonSerializerDefaults.Web);
+    readonly AccountStore accounts;
+    public ChatHub(AccountStore accounts) => this.accounts = accounts;
 
     public async Task Handle(WebSocket ws, CancellationToken ct)
     {
@@ -32,8 +38,10 @@ sealed class ChatHub
         {
             var join = await Receive(ws, ct);
             if (join?.Type != "join") return;
+            var accountName = accounts.Configured ? accounts.Validate(join.Token) : Clean(join.Name,24);
+            if (accountName is null || accountName.Length==0) { await Send(ws, new { type = "error", message = "Your login expired. Please sign in again." }, ct); return; }
             roomCode = Clean(join.Room, 24).ToUpperInvariant();
-            var name = Clean(join.Name, 24);
+            var name = accountName;
             if (roomCode.Length < 4 || name.Length < 1)
             { await Send(ws, new { type = "error", message = "Use a room code of at least 4 characters and enter a name." }, ct); return; }
             var existing = rooms.TryGetValue(roomCode, out room);
@@ -145,4 +153,5 @@ sealed class ChatHub
 }
 sealed class Room(byte[] keyHash) { public byte[] KeyHash { get; } = keyHash; public string? OwnerId { get; set; } public object Gate { get; } = new(); public ConcurrentDictionary<string, Member> Members { get; } = new(); public ConcurrentDictionary<string,string> Owners { get; } = new(); }
 sealed record Member(string Id, string Name, WebSocket Socket);
-sealed class Incoming { public string? Type { get; set; } public string? Room { get; set; } public string? Name { get; set; } public string? Key { get; set; } public string? Message { get; set; } public string? Image { get; set; } public string? Id { get; set; } public string? FileName { get; set; } public string? Data { get; set; } }
+sealed class Incoming { public string? Type { get; set; } public string? Room { get; set; } public string? Name { get; set; } public string? Token { get; set; } public string? Key { get; set; } public string? Message { get; set; } public string? Image { get; set; } public string? Id { get; set; } public string? FileName { get; set; } public string? Data { get; set; } }
+sealed record AccountRequest(string Username,string Password);
